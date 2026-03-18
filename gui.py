@@ -171,6 +171,12 @@ class EmailSenderGUI:
         self.result_var = tk.StringVar(value="")
         ttk.Label(control_frame, textvariable=self.result_var, foreground="green").pack(anchor=tk.W)
 
+        # 底部水印
+        watermark_frame = ttk.Frame(self.root)
+        watermark_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=5)
+        ttk.Label(watermark_frame, text="Made by WangLin@人力资源部",
+                  foreground="gray").pack()
+
         # 加载已保存的模板
         self._refresh_templates()
 
