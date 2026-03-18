@@ -238,8 +238,9 @@ class EmailSenderGUI:
             return
 
         self.excel_handler = ExcelHandler(file_path)
-        if not self.excel_handler.load_file():
-            messagebox.showerror("错误", "加载Excel文件失败")
+        success, error_msg = self.excel_handler.load_file()
+        if not success:
+            messagebox.showerror("错误", error_msg)
             return
 
         # 显示字段

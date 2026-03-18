@@ -17,22 +17,27 @@ class ExcelHandler:
         self.columns: List[str] = []
         self.email_column: Optional[str] = None
 
-    def load_file(self) -> bool:
-        """加载Excel文件"""
+    def load_file(self) -> tuple[bool, str]:
+        """加载Excel文件，返回 (成功与否, 错误信息)"""
         try:
             if self.file_path.endswith('.xlsx'):
                 self.df = pd.read_excel(self.file_path, engine='openpyxl')
             elif self.file_path.endswith('.xls'):
                 self.df = pd.read_excel(self.file_path, engine='xlrd')
             else:
-                return False
+                return False, "不支持的文件格式，请使用 .xlsx 或 .xls 文件"
 
             self.columns = self.df.columns.tolist()
             self._detect_email_column()
-            return True
+            return True, ""
+        except ModuleNotFoundError as e:
+            return False, f"缺少依赖库: {e.name}，请安装后重试"
+        except FileNotFoundError:
+            return False, "文件不存在，请检查文件路径"
+        except PermissionError:
+            return False, "文件被占用或无权限访问，请关闭Excel后重试"
         except Exception as e:
-            print(f"加载Excel文件失败: {e}")
-            return False
+            return False, f"加载失败: {str(e)}"
 
     def _detect_email_column(self) -> None:
         """自动检测邮箱列"""
