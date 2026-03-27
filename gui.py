@@ -40,8 +40,32 @@ class EmailSenderGUI:
 
     def _create_widgets(self) -> None:
         """创建所有界面组件"""
-        # 主容器，支持滚动
-        main_frame = ttk.Frame(self.root, padding="10")
+        # 创建可滚动容器
+        container = ttk.Frame(self.root)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        # Canvas 和 Scrollbar
+        self.canvas = tk.Canvas(container)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = ttk.Frame(self.canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+
+        # 布局
+        self.canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # 绑定鼠标滚轮事件
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+        # 主容器
+        main_frame = ttk.Frame(self.scrollable_frame, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # === SMTP配置区域 ===
@@ -145,6 +169,20 @@ class EmailSenderGUI:
         hint_label = ttk.Label(template_frame, text="示例: 尊敬的{name}，您好！您的订单号是{order_id}", foreground="gray")
         hint_label.pack(anchor=tk.W)
 
+        # === 附件区域 ===
+        attachment_frame = ttk.LabelFrame(main_frame, text="附件", padding="10")
+        attachment_frame.pack(fill=tk.X, pady=5)
+
+        attach_row = ttk.Frame(attachment_frame)
+        attach_row.pack(fill=tk.X)
+        ttk.Button(attach_row, text="添加附件", command=self._add_attachments).pack(side=tk.LEFT, padx=5)
+        ttk.Button(attach_row, text="清空附件", command=self._clear_attachments).pack(side=tk.LEFT, padx=5)
+
+        # 附件列表
+        self.attachments_listbox = tk.Listbox(attachment_frame, height=3)
+        self.attachments_listbox.pack(fill=tk.X, pady=5)
+        self.attachments = []  # 存储附件路径列表
+
         # === 发送控制区域 ===
         control_frame = ttk.LabelFrame(main_frame, text="发送控制", padding="10")
         control_frame.pack(fill=tk.X, pady=5)
@@ -179,6 +217,10 @@ class EmailSenderGUI:
 
         # 加载已保存的模板
         self._refresh_templates()
+
+    def _on_mousewheel(self, event) -> None:
+        """鼠标滚轮滚动事件"""
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _load_saved_config(self) -> None:
         """加载已保存的配置"""
@@ -314,6 +356,23 @@ class EmailSenderGUI:
             self._refresh_templates()
             self.template_name_var.set("")
 
+    def _add_attachments(self) -> None:
+        """添加附件"""
+        file_paths = filedialog.askopenfilenames(
+            title="选择附件",
+            filetypes=[("所有文件", "*.*")]
+        )
+        if file_paths:
+            for path in file_paths:
+                if path not in self.attachments:
+                    self.attachments.append(path)
+                    self.attachments_listbox.insert(tk.END, os.path.basename(path))
+
+    def _clear_attachments(self) -> None:
+        """清空附件"""
+        self.attachments.clear()
+        self.attachments_listbox.delete(0, tk.END)
+
     def _preview_first(self) -> None:
         """预览第一封邮件"""
         if not self._validate_before_send():
@@ -424,6 +483,7 @@ class EmailSenderGUI:
             subject_template=subject_template,
             content_template=content_template,
             is_html=True,
+            attachments=self.attachments.copy() if self.attachments else None,
             progress_callback=progress_callback,
             complete_callback=complete_callback
         )

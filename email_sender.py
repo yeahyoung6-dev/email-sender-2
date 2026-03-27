@@ -6,8 +6,10 @@
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from email.header import Header
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, List
+import os
 import time
 import threading
 
@@ -67,16 +69,32 @@ class EmailSender:
         return result
 
     def send_single_email(self, to_email: str, subject: str,
-                          content: str, is_html: bool = True) -> Dict[str, Any]:
+                          content: str, is_html: bool = True,
+                          attachments: List[str] = None) -> Dict[str, Any]:
         """发送单封邮件"""
         try:
-            msg = MIMEMultipart('alternative')
+            msg = MIMEMultipart('mixed')
             msg['From'] = f"{self.sender_name} <{self.sender_email}>"
             msg['To'] = to_email
             msg['Subject'] = Header(subject, 'utf-8')
 
+            # 添加正文
+            content_part = MIMEMultipart('alternative')
             content_type = 'html' if is_html else 'plain'
-            msg.attach(MIMEText(content, content_type, 'utf-8'))
+            content_part.attach(MIMEText(content, content_type, 'utf-8'))
+            msg.attach(content_part)
+
+            # 添加附件
+            if attachments:
+                for file_path in attachments:
+                    if os.path.exists(file_path):
+                        with open(file_path, 'rb') as f:
+                            part = MIMEApplication(f.read())
+                            filename = os.path.basename(file_path)
+                            # 处理中文文件名
+                            part.add_header('Content-Disposition', 'attachment',
+                                           filename=('utf-8', '', filename))
+                            msg.attach(part)
 
             if self.use_ssl:
                 server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port)
@@ -95,6 +113,7 @@ class EmailSender:
     def send_batch(self, records: list, email_column: str,
                    subject_template: str, content_template: str,
                    is_html: bool = True,
+                   attachments: List[str] = None,
                    progress_callback: Optional[Callable] = None,
                    complete_callback: Optional[Callable] = None) -> None:
         """批量发送邮件（在后台线程运行）"""
@@ -114,7 +133,7 @@ class EmailSender:
                 subject = self.render_template(subject_template, record)
                 content = self.render_template(content_template, record)
 
-                result = self.send_single_email(to_email, subject, content, is_html)
+                result = self.send_single_email(to_email, subject, content, is_html, attachments)
                 result['email'] = to_email
                 result['index'] = i + 1
                 results.append(result)
