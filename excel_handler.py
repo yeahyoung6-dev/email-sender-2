@@ -21,9 +21,9 @@ class ExcelHandler:
         """加载Excel文件，返回 (成功与否, 错误信息)"""
         try:
             if self.file_path.endswith('.xlsx'):
-                self.df = pd.read_excel(self.file_path, engine='openpyxl')
+                self.df = pd.read_excel(self.file_path, engine='openpyxl', dtype=str)
             elif self.file_path.endswith('.xls'):
-                self.df = pd.read_excel(self.file_path, engine='xlrd')
+                self.df = pd.read_excel(self.file_path, engine='xlrd', dtype=str)
             else:
                 return False, "不支持的文件格式，请使用 .xlsx 或 .xls 文件"
 
