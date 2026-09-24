@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from typing import Optional
 import os
+import threading
 
 from excel_handler import ExcelHandler
 from email_sender import EmailSender
@@ -63,6 +64,8 @@ class EmailSenderGUI:
 
         # 绑定鼠标滚轮事件
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel)  # Linux 向上
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel)  # Linux 向下
 
         # 主容器
         main_frame = ttk.Frame(self.scrollable_frame, padding="10")
@@ -100,7 +103,8 @@ class EmailSenderGUI:
         ttk.Label(row3, text="发件人名称:", width=10).pack(side=tk.LEFT)
         self.sender_name_var = tk.StringVar()
         ttk.Entry(row3, textvariable=self.sender_name_var, width=30).pack(side=tk.LEFT, padx=5)
-        ttk.Button(row3, text="测试连接", command=self._test_smtp_connection).pack(side=tk.LEFT, padx=10)
+        self.test_btn = ttk.Button(row3, text="测试连接", command=self._test_smtp_connection)
+        self.test_btn.pack(side=tk.LEFT, padx=10)
         ttk.Button(row3, text="保存配置", command=self._save_smtp_config).pack(side=tk.LEFT)
 
         # === Excel文件区域 ===
@@ -129,6 +133,7 @@ class EmailSenderGUI:
         self.email_column_var = tk.StringVar()
         self.email_column_combo = ttk.Combobox(email_col_row, textvariable=self.email_column_var, width=20, state="readonly")
         self.email_column_combo.pack(side=tk.LEFT, padx=5)
+        self.email_column_combo.bind('<<ComboboxSelected>>', self._on_email_column_selected)
         ttk.Label(email_col_row, text="发送间隔(秒):").pack(side=tk.LEFT, padx=10)
         self.interval_var = tk.StringVar(value="1")
         ttk.Entry(email_col_row, textvariable=self.interval_var, width=8).pack(side=tk.LEFT)
@@ -219,8 +224,26 @@ class EmailSenderGUI:
         self._refresh_templates()
 
     def _on_mousewheel(self, event) -> None:
-        """鼠标滚轮滚动事件"""
-        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        """鼠标滚轮滚动事件：只在主窗口、且不在自带滚动的控件上时滚动主界面"""
+        widget = event.widget
+        # 弹出层（如下拉框列表）的 widget 是字符串名，不处理
+        if not isinstance(widget, tk.Misc):
+            return
+        # 预览/日志等子窗口里不滚动主界面
+        if widget.winfo_toplevel() is not self.root:
+            return
+        # 文本框、列表框自己会滚动，避免两处同时滚
+        if isinstance(widget, (tk.Text, tk.Listbox)):
+            return
+
+        if event.num == 4:
+            step = -1
+        elif event.num == 5:
+            step = 1
+        else:
+            step = -1 if event.delta > 0 else 1
+            step *= max(1, abs(event.delta) // 120)
+        self.canvas.yview_scroll(step, "units")
 
     def _load_saved_config(self) -> None:
         """加载已保存的配置"""
@@ -240,7 +263,7 @@ class EmailSenderGUI:
         last_excel = self.config.get_last_excel()
         if last_excel and os.path.exists(last_excel):
             self.excel_path_var.set(last_excel)
-            self._load_excel()
+            self._load_excel(silent=True)
 
     def _get_port(self) -> Optional[int]:
         """读取端口，非法时提示并返回None"""
@@ -281,22 +304,36 @@ class EmailSenderGUI:
         messagebox.showinfo("成功", "配置已保存")
 
     def _test_smtp_connection(self) -> None:
-        """测试SMTP连接"""
+        """测试SMTP连接（后台线程执行，避免界面卡住）"""
         port = self._get_port()
         if port is None:
             return
-        self.email_sender.set_config(
+        # 使用独立的发送器，避免发送过程中修改正在使用的配置
+        tester = EmailSender()
+        tester.set_config(
             server=self.smtp_server_var.get(),
             port=port,
             email=self.sender_email_var.get(),
             password=self.sender_password_var.get(),
             use_ssl=self.use_ssl_var.get()
         )
-        result = self.email_sender.test_connection()
-        if result['success']:
-            messagebox.showinfo("成功", result['message'])
-        else:
-            messagebox.showerror("失败", result['message'])
+        self.test_btn.config(state=tk.DISABLED, text="测试中...")
+
+        def on_result(result):
+            self.test_btn.config(state=tk.NORMAL, text="测试连接")
+            if result['success']:
+                messagebox.showinfo("成功", result['message'])
+            else:
+                messagebox.showerror("失败", result['message'])
+
+        def worker():
+            result = tester.test_connection()
+            try:
+                self.root.after(0, lambda: on_result(result))
+            except (RuntimeError, tk.TclError):
+                pass  # 窗口已关闭
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _browse_excel(self) -> None:
         """浏览选择Excel文件"""
@@ -307,8 +344,8 @@ class EmailSenderGUI:
             self.excel_path_var.set(file_path)
             self._load_excel()
 
-    def _load_excel(self) -> None:
-        """加载Excel文件"""
+    def _load_excel(self, silent: bool = False) -> None:
+        """加载Excel文件，silent=True 时（启动自动加载）不弹提示框"""
         file_path = self.excel_path_var.get()
         if not file_path:
             messagebox.showwarning("提示", "请选择Excel文件")
@@ -317,7 +354,10 @@ class EmailSenderGUI:
         self.excel_handler = ExcelHandler(file_path)
         success, error_msg = self.excel_handler.load_file()
         if not success:
-            messagebox.showerror("错误", error_msg)
+            if silent:
+                self.fields_var.set(f"上次的文件加载失败: {error_msg}")
+            else:
+                messagebox.showerror("错误", error_msg)
             return
 
         # 显示字段
@@ -326,10 +366,17 @@ class EmailSenderGUI:
 
         # 更新邮箱列下拉框
         self.email_column_combo['values'] = columns
-        if self.excel_handler.email_column:
+        # 优先使用上次选择的邮箱列，其次自动检测结果
+        last_column = self.config.get_last_email_column()
+        if last_column in columns:
+            self.email_column_var.set(last_column)
+        elif self.excel_handler.email_column:
             self.email_column_var.set(self.excel_handler.email_column)
         elif columns:
             self.email_column_var.set(columns[0])
+        else:
+            self.email_column_var.set("")
+        self.excel_handler.set_email_column(self.email_column_var.get())
 
         # 显示预览
         preview_data = self.excel_handler.get_preview_data(3)
@@ -344,7 +391,15 @@ class EmailSenderGUI:
         if self.email_column_var.get():
             self.config.set_last_email_column(self.email_column_var.get())
 
-        messagebox.showinfo("成功", f"已加载 {self.excel_handler.get_row_count()} 条记录")
+        if not silent:
+            messagebox.showinfo("成功", f"已加载 {self.excel_handler.get_row_count()} 条记录")
+
+    def _on_email_column_selected(self, event=None) -> None:
+        """手动选择邮箱列后同步并保存"""
+        column = self.email_column_var.get()
+        self.excel_handler.set_email_column(column)
+        if column:
+            self.config.set_last_email_column(column)
 
     def _refresh_templates(self) -> None:
         """刷新模板列表"""
@@ -475,6 +530,7 @@ class EmailSenderGUI:
 
         # 验证邮箱
         email_col = self.email_column_var.get()
+        self.excel_handler.set_email_column(email_col)
         validation = self.excel_handler.validate_emails()
         if not validation['valid']:
             msg = f"发现 {validation['invalid_count']} 个无效邮箱地址，是否继续发送？\n\n"
