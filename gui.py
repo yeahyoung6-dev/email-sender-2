@@ -7,7 +7,6 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from typing import Optional
 import os
-import threading
 
 from excel_handler import ExcelHandler
 from email_sender import EmailSender
@@ -37,6 +36,7 @@ class EmailSenderGUI:
         # 创建界面
         self._create_widgets()
         self._load_saved_config()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _create_widgets(self) -> None:
         """创建所有界面组件"""
@@ -242,11 +242,37 @@ class EmailSenderGUI:
             self.excel_path_var.set(last_excel)
             self._load_excel()
 
+    def _get_port(self) -> Optional[int]:
+        """读取端口，非法时提示并返回None"""
+        try:
+            port = int(self.smtp_port_var.get().strip())
+            if 0 < port < 65536:
+                return port
+        except ValueError:
+            pass
+        messagebox.showwarning("提示", "端口必须是 1-65535 之间的整数")
+        return None
+
+    def _get_interval(self) -> Optional[float]:
+        """读取发送间隔，非法时提示并返回None"""
+        text = self.interval_var.get().strip()
+        try:
+            interval = float(text) if text else 1.0
+            if interval >= 0:
+                return interval
+        except ValueError:
+            pass
+        messagebox.showwarning("提示", "发送间隔必须是不小于0的数字")
+        return None
+
     def _save_smtp_config(self) -> None:
         """保存SMTP配置"""
+        port = self._get_port()
+        if port is None:
+            return
         self.config.set_smtp_config(
             server=self.smtp_server_var.get(),
-            port=int(self.smtp_port_var.get()),
+            port=port,
             email=self.sender_email_var.get(),
             password=self.sender_password_var.get(),
             sender_name=self.sender_name_var.get(),
@@ -256,9 +282,12 @@ class EmailSenderGUI:
 
     def _test_smtp_connection(self) -> None:
         """测试SMTP连接"""
+        port = self._get_port()
+        if port is None:
+            return
         self.email_sender.set_config(
             server=self.smtp_server_var.get(),
-            port=int(self.smtp_port_var.get()),
+            port=port,
             email=self.sender_email_var.get(),
             password=self.sender_password_var.get(),
             use_ssl=self.use_ssl_var.get()
@@ -332,7 +361,7 @@ class EmailSenderGUI:
         self.config.save_template(
             name=name,
             subject=self.subject_var.get(),
-            content=self.content_text.get('1.0', tk.END)
+            content=self.content_text.get('1.0', 'end-1c')
         )
         self._refresh_templates()
         messagebox.showinfo("成功", f"模板 '{name}' 已保存")
@@ -385,7 +414,7 @@ class EmailSenderGUI:
 
         first_record = records[0]
         subject = self.email_sender.render_template(self.subject_var.get(), first_record)
-        content = self.email_sender.render_template(self.content_text.get('1.0', tk.END), first_record)
+        content = self.email_sender.render_template(self.content_text.get('1.0', 'end-1c'), first_record)
 
         preview_window = tk.Toplevel(self.root)
         preview_window.title("邮件预览")
@@ -405,7 +434,7 @@ class EmailSenderGUI:
             messagebox.showwarning("提示", "请填写发件邮箱和授权码")
             return False
 
-        if not self.excel_handler.df is not None:
+        if self.excel_handler.df is None:
             messagebox.showwarning("提示", "请先加载Excel文件")
             return False
 
@@ -417,7 +446,7 @@ class EmailSenderGUI:
             messagebox.showwarning("提示", "请填写邮件主题")
             return False
 
-        content = self.content_text.get('1.0', tk.END).strip()
+        content = self.content_text.get('1.0', 'end-1c').strip()
         if not content:
             messagebox.showwarning("提示", "请填写邮件内容")
             return False
@@ -426,7 +455,22 @@ class EmailSenderGUI:
 
     def _start_send(self) -> None:
         """开始发送"""
+        if self.email_sender.is_sending():
+            messagebox.showwarning("提示", "上一次发送尚未结束，请稍候")
+            return
+
         if not self._validate_before_send():
+            return
+
+        port = self._get_port()
+        interval = self._get_interval()
+        if port is None or interval is None:
+            return
+
+        # 检查附件
+        _, missing = self.email_sender.load_attachments(self.attachments)
+        if missing:
+            messagebox.showerror("错误", "以下附件不存在或无法读取：\n" + "\n".join(missing))
             return
 
         # 验证邮箱
@@ -443,16 +487,16 @@ class EmailSenderGUI:
         # 设置发送器配置
         self.email_sender.set_config(
             server=self.smtp_server_var.get(),
-            port=int(self.smtp_port_var.get()),
+            port=port,
             email=self.sender_email_var.get(),
             password=self.sender_password_var.get(),
             sender_name=self.sender_name_var.get(),
-            interval=float(self.interval_var.get() or 1),
+            interval=interval,
             use_ssl=self.use_ssl_var.get()
         )
 
         # 保存间隔设置
-        self.config.set_interval(float(self.interval_var.get() or 1))
+        self.config.set_interval(interval)
 
         # 创建日志
         self.logger.create_session_log()
@@ -467,14 +511,20 @@ class EmailSenderGUI:
         # 获取数据
         records = self.excel_handler.get_records()
         subject_template = self.subject_var.get()
-        content_template = self.content_text.get('1.0', tk.END)
+        content_template = self.content_text.get('1.0', 'end-1c')
 
-        # 定义回调函数
+        # 定义回调函数（窗口已关闭时忽略）
+        def schedule(func):
+            try:
+                self.root.after(0, func)
+            except (RuntimeError, tk.TclError):
+                pass
+
         def progress_callback(current, total, result):
-            self.root.after(0, lambda: self._update_progress(current, total, result))
+            schedule(lambda: self._update_progress(current, total, result))
 
-        def complete_callback(success, fail, results):
-            self.root.after(0, lambda: self._on_send_complete(success, fail, results))
+        def complete_callback(success, fail, results, stop_reason):
+            schedule(lambda: self._on_send_complete(success, fail, results, stop_reason))
 
         # 开始批量发送
         self.email_sender.send_batch(
@@ -482,7 +532,6 @@ class EmailSenderGUI:
             email_column=email_col,
             subject_template=subject_template,
             content_template=content_template,
-            is_html=True,
             attachments=self.attachments.copy() if self.attachments else None,
             progress_callback=progress_callback,
             complete_callback=complete_callback
@@ -501,17 +550,24 @@ class EmailSenderGUI:
             message=result['message']
         )
 
-    def _on_send_complete(self, success: int, fail: int, results: list) -> None:
-        """发送完成回调"""
+    def _on_send_complete(self, success: int, fail: int, results: list,
+                          stop_reason: Optional[str] = None) -> None:
+        """发送完成回调（后台线程真正结束后才恢复按钮）"""
         self.is_sending = False
         self.send_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
-        self.progress_label.config(text="发送完成")
 
         # 记录摘要
         self.logger.log_summary(success, fail)
 
         total = success + fail
+        if stop_reason:
+            self.progress_label.config(text="已停止")
+            self.result_var.set(f"已停止: 已发送 {total} 封, 成功 {success}, 失败 {fail}")
+            messagebox.showwarning("已停止", f"发送已停止（{stop_reason}）\n成功: {success}\n失败: {fail}")
+            return
+
+        self.progress_label.config(text="发送完成")
         self.result_var.set(f"发送完成: 成功 {success}/{total}, 失败 {fail}/{total}")
 
         if fail == 0:
@@ -522,11 +578,10 @@ class EmailSenderGUI:
     def _stop_send(self) -> None:
         """停止发送"""
         if messagebox.askyesno("确认", "确定停止发送？"):
+            # 按钮在后台线程真正结束（_on_send_complete）后再恢复，防止重复发送
             self.email_sender.stop_sending()
-            self.is_sending = False
-            self.send_btn.config(state=tk.NORMAL)
             self.stop_btn.config(state=tk.DISABLED)
-            self.progress_label.config(text="已停止")
+            self.progress_label.config(text="正在停止...")
 
     def _show_logs(self) -> None:
         """显示日志窗口"""
@@ -601,6 +656,14 @@ class EmailSenderGUI:
 
         ttk.Button(btn_frame, text="加载日志", command=load_log).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="导出CSV", command=export_csv).pack(side=tk.LEFT, padx=5)
+
+    def _on_close(self) -> None:
+        """关闭窗口，发送中需确认"""
+        if self.email_sender.is_sending():
+            if not messagebox.askyesno("确认", "正在发送邮件，确定退出？未发送的邮件将被取消。"):
+                return
+            self.email_sender.stop_sending()
+        self.root.destroy()
 
     def run(self) -> None:
         """运行应用"""

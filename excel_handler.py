@@ -20,13 +20,19 @@ class ExcelHandler:
     def load_file(self) -> tuple[bool, str]:
         """加载Excel文件，返回 (成功与否, 错误信息)"""
         try:
-            if self.file_path.endswith('.xlsx'):
-                self.df = pd.read_excel(self.file_path, engine='openpyxl', dtype=str)
-            elif self.file_path.endswith('.xls'):
-                self.df = pd.read_excel(self.file_path, engine='xlrd', dtype=str)
+            ext = self.file_path.lower()
+            if ext.endswith('.xlsx'):
+                df = pd.read_excel(self.file_path, engine='openpyxl', dtype=str)
+            elif ext.endswith('.xls'):
+                df = pd.read_excel(self.file_path, engine='xlrd', dtype=str)
             else:
                 return False, "不支持的文件格式，请使用 .xlsx 或 .xls 文件"
 
+            # 空单元格是NaN，统一转为空字符串，避免邮件中出现 "nan"
+            df = df.fillna('')
+            # 列名统一为字符串（数字表头会被读成int）
+            df.columns = [str(c) for c in df.columns]
+            self.df = df
             self.columns = self.df.columns.tolist()
             self._detect_email_column()
             return True, ""
@@ -52,7 +58,9 @@ class ExcelHandler:
         if not self.email_column:
             email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
             for col in self.columns:
-                sample = self.df[col].dropna().head(10).astype(str)
+                sample = self.df[col][self.df[col].str.strip() != ''].head(10)
+                if sample.empty:
+                    continue
                 if sample.str.match(email_regex).mean() > 0.8:
                     self.email_column = col
                     break
