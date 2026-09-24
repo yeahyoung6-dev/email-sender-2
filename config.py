@@ -4,28 +4,67 @@
 """
 
 import os
+import sys
 import json
 import base64
+import tempfile
 from typing import Dict, Any, Optional
+
+
+APP_NAME = "邮件群发工具"
+
+
+def _is_writable(directory: str) -> bool:
+    """实际创建临时文件检测目录是否可写（Windows 下 os.access 不可靠）"""
+    try:
+        with tempfile.TemporaryFile(dir=directory):
+            pass
+        return True
+    except OSError:
+        return False
+
+
+def get_app_dir() -> str:
+    """获取程序数据目录：优先 exe/脚本所在目录；不可写时（如装在 Program Files）使用用户目录"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后 __file__ 指向临时解压目录，需用 exe 所在目录
+        base_dir = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if _is_writable(base_dir):
+        return base_dir
+
+    fallback = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~'), APP_NAME)
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
+
+
+APP_DIR = get_app_dir()
 
 
 class ConfigManager:
     """配置管理类"""
 
-    def __init__(self, config_file: str = "config.json"):
-        self.config_file = config_file
+    def __init__(self, config_file: Optional[str] = None):
+        self.config_file = config_file or os.path.join(APP_DIR, "config.json")
         self.config: Dict[str, Any] = {}
         self._load_config()
 
     def _load_config(self) -> None:
-        """加载配置文件"""
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r', encoding='utf-8') as f:
-                    self.config = json.load(f)
-            except Exception:
+        """加载配置文件；新位置没有配置时，兼容读取旧版保存在当前工作目录的配置"""
+        path = self.config_file
+        if not os.path.exists(path):
+            legacy = os.path.abspath("config.json")
+            if os.path.exists(legacy):
+                path = legacy
+            else:
                 self.config = {}
-        else:
+                return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                self.config = json.load(f)
+        except Exception:
             self.config = {}
 
     def _save_config(self) -> bool:

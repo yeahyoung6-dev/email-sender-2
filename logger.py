@@ -8,12 +8,14 @@ import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+from config import APP_DIR
+
 
 class SendLogger:
     """发送日志类"""
 
-    def __init__(self, log_dir: str = "logs"):
-        self.log_dir = log_dir
+    def __init__(self, log_dir: Optional[str] = None):
+        self.log_dir = log_dir or os.path.join(APP_DIR, "logs")
         self.current_log_file: Optional[str] = None
         self._ensure_log_dir()
 
